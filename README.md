@@ -1,8 +1,12 @@
 # honeygain-one-click-command-installation
 
+## Fork changes
+
+Used Claude to refactor the original script that used Docker to use Podman instead to make it work especially on Bazzite, could work on other Fedora Atomic distros or other immutable distros, not sure tho.
+
 ## Language
 
-[English](README.md) | [中文文档](README_zh.md)
+[English](README.md)
 
 ## **Introduction**
 

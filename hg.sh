@@ -45,19 +45,14 @@ check_podman(){
 }
 
 check_ipv4(){
-  API_NET=("ip.sb" "ipget.net" "ip.ping0.cc" "https://ip4.seeip.org" "https://api.my-ip.io/ip" "https://ipv4.icanhazip.com" "api.ipify.org")
-  for p in "${API_NET[@]}"; do
-    response=$(curl -s4m8 "$p" || true)
-    sleep 1
-    if [ -n "$response" ] && ! echo "$response" | grep -q "error"; then
-      IP_API="$p"
-      break
-    fi
-  done
-  if [ -z "${IP_API:-}" ] || ! curl -s4m8 "$IP_API" | grep -q '\.'; then
-    red " ERROR: The host must have working IPv4 connectivity to pull images.\n"
-    exit 1
+  # Talk directly to the registry we're about to pull from, rather than a
+  # third-party "what's my IP" service. Those often break under
+  # Tailscale exit nodes / Pi-hole DNS even when normal connectivity is fine.
+  if curl -s4m8 -o /dev/null -w '%{http_code}' https://registry-1.docker.io/v2/ | grep -qE '^(200|401)$'; then
+    return 0
   fi
+  yellow " Warning: couldn't verify connectivity to docker.io (this can happen with Tailscale exit nodes or Pi-hole DNS).\n"
+  yellow " Continuing anyway — the image pull below will fail with a clearer error if there's really no connectivity.\n"
 }
 
 input_token(){

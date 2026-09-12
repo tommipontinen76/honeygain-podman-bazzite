@@ -16,9 +16,9 @@ NAME='honeygain'
 QUADLET_DIR="$HOME/.config/containers/systemd"
 QUADLET_FILE="$QUADLET_DIR/${NAME}.container"
 
-red(){ echo -e "\033[31m\033[01m$1$2\033[0m"; }
-green(){ echo -e "\033[32m\033[01m$1$2\033[0m"; }
-yellow(){ echo -e "\033[33m\033[01m$1$2\033[0m"; }
+red(){ echo -e "\033[31m\033[01m$1${2:-}\033[0m"; }
+green(){ echo -e "\033[32m\033[01m$1${2:-}\033[0m"; }
+yellow(){ echo -e "\033[33m\033[01m$1${2:-}\033[0m"; }
 reading(){ read -rp "$(green "$1")" "$2"; }
 
 # --- sanity checks -----------------------------------------------------

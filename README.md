@@ -27,7 +27,7 @@ It has below features:
 ## Notes
 
 - Verified on AMD64
-- Try it if you are interested via my --> [referrals](https://r.honeygain.me/SPIRICF6DB) <--, you will get 5 dollar.
+- Try it if you are interested via my --> [referrals](https://join.honeygain.com/TOMMI36756)) <--, you will get 5 dollar.
 
 ## Install
 

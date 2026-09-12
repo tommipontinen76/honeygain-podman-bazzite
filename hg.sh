@@ -56,7 +56,7 @@ check_ipv4(){
 }
 
 input_token(){
-  [ -z "${EMAIL:-}" ] && reading " Enter your Email, if you do not have one, open https://r.honeygain.me/24610E80CD: " EMAIL
+  [ -z "${EMAIL:-}" ] && reading " Enter your Email, if you do not have one, open https://join.honeygain.com/TOMMI36756: " EMAIL
   [ -z "${PASSWORD:-}" ] && reading " Enter your Password: " PASSWORD
 }
 

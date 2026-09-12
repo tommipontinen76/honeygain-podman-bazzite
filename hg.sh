@@ -1,134 +1,141 @@
 #!/bin/bash
-#FROM https://github.com/spiritLHLS/honeygain-one-click-command-installation
+# Honeygain installer for Bazzite (Fedora Atomic / immutable, rootless Podman + Quadlet)
+# Adapted from https://github.com/spiritLHLS/honeygain-one-click-command-installation
+#
+# Design notes for Bazzite:
+#  - Bazzite is image-based (rpm-ostree). We never layer packages on the host.
+#  - Podman ships by default, so we use it instead of Docker.
+#  - Persistence across reboot/logout is handled via rootless Podman + a
+#    systemd user "Quadlet" unit, plus `loginctl enable-linger`.
+#  - Auto-updates use Podman's built-in `podman-auto-update.timer`
+#    instead of a Watchtower sidecar container.
 
-utf8_locale=$(locale -a 2>/dev/null | grep -i -m 1 -E "UTF-8|utf8")
-if [[ -z "$utf8_locale" ]]; then
-  echo "No UTF-8 locale found"
-else
-  export LC_ALL="$utf8_locale"
-  export LANG="$utf8_locale"
-  export LANGUAGE="$utf8_locale"
-  echo "Locale set to $utf8_locale"
-fi
+set -euo pipefail
 
-# 定义容器名
 NAME='honeygain'
+QUADLET_DIR="$HOME/.config/containers/systemd"
+QUADLET_FILE="$QUADLET_DIR/${NAME}.container"
 
-# 自定义字体彩色，read 函数，安装依赖函数
 red(){ echo -e "\033[31m\033[01m$1$2\033[0m"; }
 green(){ echo -e "\033[32m\033[01m$1$2\033[0m"; }
 yellow(){ echo -e "\033[33m\033[01m$1$2\033[0m"; }
 reading(){ read -rp "$(green "$1")" "$2"; }
 
-# 必须以root运行脚本
-check_root(){
-  [[ $(id -u) != 0 ]] && red " The script must be run as root, you can enter sudo -i and then download and run again." && exit 1
+# --- sanity checks -----------------------------------------------------
+
+check_not_root(){
+  if [[ $(id -u) -eq 0 ]]; then
+    red " Don't run this as root. Rootless Podman + Quadlet expects a normal user account.\n"
+    exit 1
+  fi
 }
 
-# 判断系统，并选择相应的指令集
-check_operating_system(){
-  CMD=("$(grep -i pretty_name /etc/os-release 2>/dev/null | cut -d \" -f2)"
-       "$(hostnamectl 2>/dev/null | grep -i system | cut -d : -f2)"
-       "$(lsb_release -sd 2>/dev/null)" "$(grep -i description /etc/lsb-release 2>/dev/null | cut -d \" -f2)"
-       "$(grep . /etc/redhat-release 2>/dev/null)"
-       "$(grep . /etc/issue 2>/dev/null | cut -d \\ -f1 | sed '/^[ ]*$/d')"
-      )
-
-  for i in "${CMD[@]}"; do SYS="$i" && [[ -n $SYS ]] && break; done
-
-  REGEX=("debian" "ubuntu" "centos|red hat|kernel|oracle linux|amazon linux|alma|rocky")
-  RELEASE=("Debian" "Ubuntu" "CentOS")
-  PACKAGE_UPDATE=("apt -y update" "apt -y update" "yum -y update")
-  PACKAGE_INSTALL=("apt -y install" "apt -y install" "yum -y install")
-  PACKAGE_UNINSTALL=("apt -y autoremove" "apt -y autoremove" "yum -y autoremove")
-
-  for ((int = 0; int < ${#REGEX[@]}; int++)); do
-    [[ $(echo "$SYS" | tr '[:upper:]' '[:lower:]') =~ ${REGEX[int]} ]] && SYSTEM="${RELEASE[int]}" && break
-  done
-
-  [[ -z $SYSTEM ]] && red " ERROR: The script supports Debian, Ubuntu, CentOS or Alpine systems only.\n" && exit 1
+check_bazzite(){
+  if ! grep -qi "bazzite" /etc/os-release 2>/dev/null; then
+    yellow " Warning: this doesn't look like Bazzite. Continuing anyway, but you may need adjustments.\n"
+  fi
 }
 
-# 判断宿主机的 IPv4 或双栈情况 没有拉取不了 docker
+check_podman(){
+  if ! command -v podman >/dev/null 2>&1; then
+    red " podman was not found. On Bazzite it should be preinstalled.\n"
+    red " If it's missing, run: rpm-ostree install podman   (then reboot)\n"
+    exit 1
+  fi
+}
+
 check_ipv4(){
-  # 遍历本机可以使用的 IP API 服务商
-  # 定义可能的 IP API 服务商
   API_NET=("ip.sb" "ipget.net" "ip.ping0.cc" "https://ip4.seeip.org" "https://api.my-ip.io/ip" "https://ipv4.icanhazip.com" "api.ipify.org")
-
-  # 遍历每个 API 服务商，并检查它是否可用
   for p in "${API_NET[@]}"; do
-    # 使用 curl 请求每个 API 服务商
-    response=$(curl -s4m8 "$p")
+    response=$(curl -s4m8 "$p" || true)
     sleep 1
-    # 检查请求是否失败，或者回传内容中是否包含 error
-    if [ $? -eq 0 ] && ! echo "$response" | grep -q "error"; then
-      # 如果请求成功且不包含 error，则设置 IP_API 并退出循环
+    if [ -n "$response" ] && ! echo "$response" | grep -q "error"; then
       IP_API="$p"
       break
     fi
   done
-
-  # 判断宿主机的 IPv4 、IPv6 和双栈情况
-  ! curl -s4m8 $IP_API | grep -q '\.' && red " ERROR：The host must have IPv4. " && exit 1
+  if [ -z "${IP_API:-}" ] || ! curl -s4m8 "$IP_API" | grep -q '\.'; then
+    red " ERROR: The host must have working IPv4 connectivity to pull images.\n"
+    exit 1
+  fi
 }
 
-# 判断 CPU 架构
-check_virt(){
-  ARCHITECTURE=$(uname -m)
-  case "$ARCHITECTURE" in
-    aarch64 ) ARCH=arm64v8;;
-    x64|x86_64|amd64 ) ARCH=latest;;
-    * ) red " ERROR: Unsupported architecture: $ARCHITECTURE\n" && exit 1;;
-  esac
-}
-
-# 输入 honeygain 的个人 信息
 input_token(){
-  [ -z $EMAIL ] && reading " Enter your Email, if you do not find it, open https://r.honeygain.me/24610E80CD: " EMAIL 
-  [ -z $PASSWORD ] && reading " Enter your Password: " PASSWORD
+  [ -z "${EMAIL:-}" ] && reading " Enter your Email, if you do not have one, open https://r.honeygain.me/24610E80CD: " EMAIL
+  [ -z "${PASSWORD:-}" ] && reading " Enter your Password: " PASSWORD
 }
+
+# --- build ---------------------------------------------------------------
 
 container_build(){
-  # 宿主机安装 docker
-  green "\n Install docker.\n "
-  if ! systemctl is-active docker >/dev/null 2>&1; then
-    echo -e " \n Install docker \n " 
-    if [ $SYSTEM = "CentOS" ]; then
-      ${PACKAGE_INSTALL[int]} yum-utils
-      yum-config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo &&
-      ${PACKAGE_INSTALL[int]} docker-ce docker-ce-cli containerd.io
-      systemctl enable --now docker
-    else
-      ${PACKAGE_INSTALL[int]} docker.io
-    fi
+  green "\n Enabling linger so your containers keep running after logout/reboot.\n"
+  loginctl enable-linger "$(whoami)"
+
+  # Remove any old container/quadlet from a previous run
+  if podman ps -a --format '{{.Names}}' | grep -qw "$NAME"; then
+    yellow " Removing old honeygain container.\n"
+    systemctl --user stop "${NAME}.service" 2>/dev/null || true
+    podman rm -f "$NAME" >/dev/null 2>&1 || true
   fi
 
-  # 删除旧容器（如有）
-  docker ps -a | awk '{print $NF}' | grep -qw "$NAME" && yellow " Remove the old honeygain container.\n " && docker rm -f "$NAME" >/dev/null 2>&1
+  green "\n Pulling honeygain image.\n"
+  podman pull docker.io/honeygain/honeygain
 
-  # 创建容器
-  yellow " Create the honeygain container.\n "
-  docker pull honeygain/honeygain
-  docker run -d --name "$NAME" --restart=always honeygain/honeygain -tou-accept -email "$EMAIL" -pass "$PASSWORD" -device honeygainnode
-  
-  # 创建 Towerwatch
-  [[ ! $(docker ps -a) =~ watchtower ]] && yellow " Create TowerWatch.\n " && docker run -d --name watchtower --restart always -p 2095:8080 -v /var/run/docker.sock:/var/run/docker.sock containrrr/watchtower --cleanup >/dev/null 2>&1
+  mkdir -p "$QUADLET_DIR"
+
+  yellow " Writing Quadlet unit: $QUADLET_FILE\n"
+  cat > "$QUADLET_FILE" <<EOF
+[Unit]
+Description=Honeygain
+
+[Container]
+Image=docker.io/honeygain/honeygain
+ContainerName=${NAME}
+Exec=-tou-accept -email ${EMAIL} -pass ${PASSWORD} -device honeygainnode
+# Have Podman's auto-update timer pull newer images automatically
+AutoUpdate=registry
+
+[Service]
+Restart=always
+
+[Install]
+WantedBy=default.target
+EOF
+
+  # Quadlet files are picked up by systemd via podman-generator; reload to
+  # pick up the new unit, then start it.
+  systemctl --user daemon-reload
+  systemctl --user start "${NAME}.service"
+
+  # Enable Podman's built-in auto-update timer (replaces Watchtower)
+  systemctl --user enable --now podman-auto-update.timer
 }
 
-# 显示结果
+# --- result / uninstall ---------------------------------------------------
+
 result(){
-  docker ps -a | grep -q "$NAME" && green " Install success.\n" || red " install fail.\n"
+  sleep 2
+  if systemctl --user is-active --quiet "${NAME}.service"; then
+    green " Install success. Check status with: systemctl --user status ${NAME}.service\n"
+  else
+    red " Install may have failed. Check logs with: journalctl --user -u ${NAME}.service\n"
+  fi
 }
 
-# 卸载
 uninstall(){
-  docker rm -f $(docker ps -a | grep -w "$NAME" | awk '{print $1}')
-  docker rmi -f $(docker images | grep honeygain/honeygain | awk '{print $3}')
-  green "\n Uninstall containers and images complete.\n"
+  systemctl --user stop "${NAME}.service" 2>/dev/null || true
+  systemctl --user disable "${NAME}.service" 2>/dev/null || true
+  rm -f "$QUADLET_FILE"
+  systemctl --user daemon-reload
+  podman rm -f "$NAME" 2>/dev/null || true
+  IMG_ID=$(podman images --format '{{.Id}} {{.Repository}}' | awk '/honeygain\/honeygain/{print $1}')
+  [ -n "$IMG_ID" ] && podman rmi -f "$IMG_ID" 2>/dev/null || true
+  green "\n Uninstalled honeygain container, image, and quadlet unit.\n"
   exit 0
 }
 
-# 传参
+# --- args ------------------------------------------------------------------
+
 while getopts "UuM:m:P:p:" OPTNAME; do
   case "$OPTNAME" in
     'U'|'u' ) uninstall;;
@@ -137,12 +144,12 @@ while getopts "UuM:m:P:p:" OPTNAME; do
   esac
 done
 
-# 主程序
-check_root
-check_operating_system
+# --- main --------------------------------------------------------------
+
+check_not_root
+check_bazzite
+check_podman
 check_ipv4
-check_virt
 input_token
 container_build
 result
-rm -rf hg.sh*

@@ -1,4 +1,4 @@
-# honeygain-one-click-command-installation
+# Honeygain Podman Container (For Bazzite)
 
 ## Fork changes
 
